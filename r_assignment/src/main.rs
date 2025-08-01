@@ -14,8 +14,7 @@ fn get_model_matrix(angle: f32) -> Matrix4<f32> {
 }
 
 fn get_view_matrix(eye_pos: Vector3<f32>) -> Matrix4<f32> {
-    let mut view = Matrix4::identity();
-    let translate = Matrix4::new(
+    Matrix4::new(
         1.0,
         0.0,
         0.0,
@@ -32,9 +31,7 @@ fn get_view_matrix(eye_pos: Vector3<f32>) -> Matrix4<f32> {
         0.0,
         0.0,
         1.0,
-    );
-    view = translate * view;
-    view
+    )
 }
 
 fn get_projection_matrx(eye_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Matrix4<f32> {
@@ -58,42 +55,65 @@ fn get_projection_matrx(eye_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32
 }
 
 fn main() {
-    let mut angle = 0.0;
-    let command_line = true;
-    let filename = "output.png";
-
+    // Init rasterizer size
     let mut r = rst::Rasterizer::new(700, 700);
 
+    let mut angle = 0.0;
+
+    // camera position
     let eye_pos = Vector3::new(0., 0., 5.);
 
-    let points = vec![
-        Vector3::new(2., 0., -2.),
-        Vector3::new(0., 2., -2.),
-        Vector3::new(-2., 0., -2.),
-    ];
-    let ind = vec![Vector3::new(0, 1, 2)];
+    let points = [
+        (2., 0., -2.),
+        (0., 2., -2.),
+        (-2., 0., -2.),
+        (3.5, -1., -5.),
+        (2.5, 1.5, -5.),
+        (-1., 0.5, -5.),
+    ]
+    .iter()
+    .map(|&(x, y, z)| Vector3::new(x, y, z))
+    .collect();
+
+    let ind = vec![Vector3::new(0, 1, 2), Vector3::new(3, 4, 5)];
+
+    let colors = [
+        (217.0, 238.0, 185.0),
+        (217.0, 238.0, 185.0),
+        (217.0, 238.0, 185.0),
+        (185.0, 217.0, 238.0),
+        (185.0, 217.0, 238.0),
+        (185.0, 217.0, 238.0),
+    ]
+    .iter()
+    .map(|&(r, g, b)| Vector3::new(r, g, b))
+    .collect();
 
     let pos_id = r.load_positions(points);
     let ind_id = r.load_indices(ind);
+    let col_id = r.load_colors(colors);
 
+    // keyboard input
     let mut key = 0;
     let mut frame_count = 0;
 
+    // while running
     while key != 27 {
+        // clear depth buffer and color buffer
         r.clear(rst::Buffers::Color | rst::Buffers::Depth);
         r.set_model(get_model_matrix(angle));
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrx(45., 1., 0.1, 50.));
-        r.draw(&pos_id, &ind_id, rst::Primitive::Triangle).ok();
+        r.draw(&pos_id, &ind_id, &col_id, rst::Primitive::Triangle)
+            .ok();
 
         // Assume frame_buffer is Vec<Vector3f> with RGB floats in [0,
         let mut img_data = Vec::with_capacity(700 * 700 * 3);
 
         for pixel in r.framebuffer() {
-            // Convert RGB [0,1] to BGR [0,255]
-            img_data.push((pixel.x) as u8); // B
+            img_data.push((pixel.z) as u8); // B
             img_data.push((pixel.y) as u8); // G
-            img_data.push((pixel.z) as u8); // R
+            img_data.push((pixel.x) as u8); // R
         }
 
         let mat = Mat::from_slice(&img_data).expect("Failed to create Mat from slice");

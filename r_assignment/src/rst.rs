@@ -68,12 +68,50 @@ impl Clone for IndBuf {
     }
 }
 
+pub struct ColBuf {
+    col_id: usize,
+}
+
+impl ColBuf {
+    pub fn new(id: usize) -> Self {
+        Self { col_id: id }
+    }
+    pub fn col_id(&self) -> &usize {
+        &self.col_id
+    }
+    pub fn set(&mut self, v: usize) {
+        self.col_id = v;
+    }
+}
+
+impl Clone for ColBuf {
+    fn clone(&self) -> Self {
+        Self {
+            col_id: self.col_id,
+        }
+    }
+}
+
+fn compute_barycentric_2d(x: f32, y: f32, v: &[Vector3<f32>; 3]) -> (f32, f32, f32) {
+    let c1 = (x * (v[1].y - v[2].y) + (v[2].x - v[1].x) * y + v[1].x * v[2].y - v[2].x * v[1].y)
+        / (v[0].x * (v[1].y - v[2].y) + (v[2].x - v[1].x) * v[0].y + v[1].x * v[2].y
+            - v[2].x * v[1].y);
+    let c2 = (x * (v[2].y - v[0].y) + (v[0].x - v[2].x) * y + v[2].x * v[0].y - v[0].x * v[2].y)
+        / (v[1].x * (v[2].y - v[0].y) + (v[0].x - v[2].x) * v[1].y + v[2].x * v[0].y
+            - v[0].x * v[2].y);
+    let c3 = (x * (v[0].y - v[1].y) + (v[1].x - v[0].x) * y + v[0].x * v[1].y - v[1].x * v[0].y)
+        / (v[2].x * (v[0].y - v[1].y) + (v[1].x - v[0].x) * v[2].y + v[0].x * v[1].y
+            - v[1].x * v[0].y);
+    (c1, c2, c3)
+}
+
 pub struct Rasterizer {
     width: usize,
     height: usize,
 
     pos_buf: HashMap<usize, Vec<Vector3<f32>>>,
     ind_buf: HashMap<usize, Vec<Vector3<i32>>>,
+    col_buf: HashMap<usize, Vec<Vector3<f32>>>,
     frame_buf: Vec<Vector3<f32>>,
     depth_buf: Vec<f32>,
 
@@ -91,6 +129,7 @@ impl Rasterizer {
             height,
             pos_buf: HashMap::default(),
             ind_buf: HashMap::default(),
+            col_buf: HashMap::default(),
             frame_buf: vec![Vector3::default(); width * height],
             depth_buf: vec![f32::INFINITY; width * height],
             model: Matrix4::identity(),
@@ -125,14 +164,17 @@ impl Rasterizer {
         self.projection = projection;
     }
 
-    pub fn set_pixel(&mut self, point: &Vector3<usize>, color: &Vector3<f32>) {
+    pub fn set_pixel(&mut self, point: &Vector3<f32>, color: &Vector3<f32>) {
         // old index: auto ind = point.y() + point.x() * width;
-        if point.x >= self.width || point.y >= self.height {
+        if point.x >= self.width as f32 || point.y >= self.height as f32 {
             return;
         }
 
-        let ind = (self.height - point.y - 1) * self.width + point.x;
-        self.frame_buf[ind] = color.clone();
+        let ind = (self.height - point.y as usize - 1) * self.width + point.x as usize;
+        if self.depth_buf[ind] > point.z {
+            self.frame_buf[ind] = color.clone();
+            self.depth_buf[ind] = point.z;
+        }
     }
 
     pub fn load_positions(&mut self, positions: Vec<Vector3<f32>>) -> PosBuf {
@@ -146,10 +188,18 @@ impl Rasterizer {
         self.ind_buf.insert(id, indices.clone());
         IndBuf::new(id)
     }
+
+    pub fn load_colors(&mut self, colors: Vec<Vector3<f32>>) -> ColBuf {
+        let id = self.get_next_id();
+        self.col_buf.insert(id, colors.clone());
+        ColBuf::new(id)
+    }
+
     pub fn draw(
         &mut self,
         pos_buffer: &PosBuf,
         ind_buffer: &IndBuf,
+        col_buffer: &ColBuf,
         primitive: Primitive,
     ) -> Result<(), String> {
         // Implement triangle rasterization here
@@ -157,14 +207,20 @@ impl Rasterizer {
             Primitive::Triangle => {
                 let buf = self
                     .pos_buf
-                    .get(&pos_buffer.pos_id())
+                    .get(pos_buffer.pos_id())
                     .ok_or("Invalid pos buffer id")?
                     .clone();
 
                 let ind = self
                     .ind_buf
-                    .get(&ind_buffer.ind_id())
+                    .get(ind_buffer.ind_id())
                     .ok_or("Invalid ind buffer id")?
+                    .clone();
+
+                let col = self
+                    .col_buf
+                    .get(col_buffer.col_id())
+                    .ok_or("Invlid color buffer id")?
                     .clone();
 
                 let f1 = (100. - 0.1) / 2.0;
@@ -209,10 +265,15 @@ impl Rasterizer {
                         t.set_vertex(j, Vector3::new(vert.x, vert.y, vert.z)).ok();
                     }
 
-                    t.set_color(0, 255.0, 0.0, 0.0).ok();
-                    t.set_color(1, 0.0, 255.0, 0.0).ok();
-                    t.set_color(2, 0.0, 0.0, 255.0).ok();
-                    self.rasterize_wireframe(&t)
+                    let col_x = col[i[0] as usize];
+                    let col_y = col[i[1] as usize];
+                    let col_z = col[i[2] as usize];
+
+                    t.set_color(0, col_x[0], col_x[1], col_x[2]).ok();
+                    t.set_color(1, col_y[0], col_y[1], col_y[2]).ok();
+                    t.set_color(2, col_z[0], col_z[1], col_z[2]).ok();
+                    self.rasterize_wireframe(&t);
+                    self.rasterize_triangle(&t);
                 }
                 Ok(())
             }
@@ -262,7 +323,7 @@ impl Rasterizer {
                 y = y2 as i32;
                 xe = x1 as i32;
             }
-            let point = Vector3::new(x as usize, y as usize, 1);
+            let point = Vector3::new(x as f32, y as f32, 1.);
             self.set_pixel(&point, &line_color);
             let xs = x + 1;
             for x in xs..=xe {
@@ -276,7 +337,7 @@ impl Rasterizer {
                     }
                     px += 2. * (dy1 - dx1);
                 }
-                let point = Vector3::new(x as usize, y as usize, 1);
+                let point = Vector3::new(x as f32, y as f32, 1.);
                 self.set_pixel(&point, &line_color);
             }
         } else {
@@ -289,7 +350,7 @@ impl Rasterizer {
                 y = y2 as i32;
                 ye = y1 as i32;
             }
-            let point = Vector3::new(x as usize, y as usize, 1);
+            let point = Vector3::new(x as f32, y as f32, 1.);
             self.set_pixel(&point, &line_color);
             let ys = y + 1;
             for y in ys..=ye {
@@ -303,7 +364,7 @@ impl Rasterizer {
                     }
                     py += 2. * (dx1 - dy1);
                 }
-                let point = Vector3::new(x as usize, y as usize, 1);
+                let point = Vector3::new(x as f32, y as f32, 1.);
                 self.set_pixel(&point, &line_color);
             }
         }
@@ -313,6 +374,32 @@ impl Rasterizer {
         self.draw_line(t.c(), t.a());
         self.draw_line(t.c(), t.b());
         self.draw_line(t.b(), t.a());
+    }
+
+    fn rasterize_triangle(&mut self, t: &Triangle) {
+        //TODO: get bound box
+        let v = t.to_vector4();
+        let right = t.a()[0].max(t.b()[0]).max(t.c()[0]);
+        let left = t.a()[0].min(t.b()[0]).min(t.c()[0]);
+        let top = t.a()[1].max(t.b()[1]).max(t.c()[1]);
+        let bottom = t.a()[1].min(t.b()[1]).min(t.c()[1]);
+        for x in left as i32..right as i32 {
+            for y in bottom as i32..top as i32 {
+                if t.contains(x, y) {
+                    let (alpha, beta, gamma) =
+                        compute_barycentric_2d(x as f32 + 0.5, y as f32 + 0.5, t.v());
+                    let w_reciprocal = 1.0 / (alpha / v[0].w + beta / v[1].w + gamma / v[2].w);
+                    let mut z_interpolated =
+                        alpha * v[0].z / v[0].w + beta * v[1].z / v[1].w + gamma * v[2].z / v[2].w;
+                    z_interpolated *= w_reciprocal;
+                    //TODO: only one color per triangle
+                    self.set_pixel(
+                        &Vector3::new(x as f32, y as f32, z_interpolated),
+                        &t.get_color(),
+                    );
+                }
+            }
+        }
     }
 
     fn get_next_id(&mut self) -> usize {
