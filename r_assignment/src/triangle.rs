@@ -36,8 +36,8 @@ impl Triangle {
         &self.v
     }
 
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        let point = Vector3::new(x as f32, y as f32, 1.);
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let point = Vector3::new(x, y, 1.);
         let cross_prod0 = (self.v[0] - self.v[1]).cross(&(point - self.v[1]));
         let cross_prod1 = (self.v[1] - self.v[2]).cross(&(point - self.v[2]));
         let cross_prod2 = (self.v[2] - self.v[0]).cross(&(point - self.v[0]));

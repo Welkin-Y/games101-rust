@@ -385,7 +385,7 @@ impl Rasterizer {
         let bottom = t.a()[1].min(t.b()[1]).min(t.c()[1]);
         for x in left as i32..right as i32 {
             for y in bottom as i32..top as i32 {
-                if t.contains(x, y) {
+                if t.contains(x as f32 + 0.5, y as f32 + 0.5) {
                     let (alpha, beta, gamma) =
                         compute_barycentric_2d(x as f32 + 0.5, y as f32 + 0.5, t.v());
                     let w_reciprocal = 1.0 / (alpha / v[0].w + beta / v[1].w + gamma / v[2].w);
