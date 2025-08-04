@@ -5,7 +5,7 @@
 
 use crate::triangle::Triangle;
 use bitflags::bitflags;
-use nalgebra::{Matrix4, Vector3, Vector4};
+use nalgebra::{Matrix4, Vector2, Vector3, Vector4};
 use std::collections::HashMap;
 
 bitflags! {
@@ -92,6 +92,11 @@ impl Clone for ColBuf {
     }
 }
 
+pub enum AntiAliasing {
+    None,
+    Grid2x2,
+}
+
 fn compute_barycentric_2d(x: f32, y: f32, v: &[Vector3<f32>; 3]) -> (f32, f32, f32) {
     let c1 = (x * (v[1].y - v[2].y) + (v[2].x - v[1].x) * y + v[1].x * v[2].y - v[2].x * v[1].y)
         / (v[0].x * (v[1].y - v[2].y) + (v[2].x - v[1].x) * v[0].y + v[1].x * v[2].y
@@ -112,30 +117,40 @@ pub struct Rasterizer {
     pos_buf: HashMap<usize, Vec<Vector3<f32>>>,
     ind_buf: HashMap<usize, Vec<Vector3<i32>>>,
     col_buf: HashMap<usize, Vec<Vector3<f32>>>,
+
+    sample_frame_buf: Vec<Vec<Vector3<f32>>>,
     frame_buf: Vec<Vector3<f32>>,
-    depth_buf: Vec<f32>,
+    depth_buf: Vec<Vec<f32>>,
 
     model: Matrix4<f32>,
     view: Matrix4<f32>,
     projection: Matrix4<f32>,
 
     next_id: usize,
+    antialiasing: AntiAliasing,
 }
 
 impl Rasterizer {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(width: usize, height: usize, antialising: AntiAliasing) -> Self {
+        let len = match antialising {
+            AntiAliasing::None => 1,
+            AntiAliasing::Grid2x2 => 4,
+        };
         Self {
             width,
             height,
             pos_buf: HashMap::default(),
             ind_buf: HashMap::default(),
             col_buf: HashMap::default(),
+
+            sample_frame_buf: vec![vec![Vector3::default(); len]; width * height],
             frame_buf: vec![Vector3::default(); width * height],
-            depth_buf: vec![f32::INFINITY; width * height],
+            depth_buf: vec![vec![f32::INFINITY; len]; width * height],
             model: Matrix4::identity(),
             view: Matrix4::identity(),
             projection: Matrix4::identity(),
             next_id: 0,
+            antialiasing: antialising,
         }
     }
 
@@ -144,10 +159,17 @@ impl Rasterizer {
             for pixel in &mut self.frame_buf {
                 *pixel = Vector3::default();
             }
+            for samples in &mut self.sample_frame_buf {
+                for sample in samples {
+                    *sample = Vector3::default();
+                }
+            }
         }
         if buffers.contains(Buffers::Depth) {
             for depth in &mut self.depth_buf {
-                *depth = f32::INFINITY;
+                for d in depth {
+                    *d = f32::INFINITY;
+                }
             }
         }
     }
@@ -164,16 +186,16 @@ impl Rasterizer {
         self.projection = projection;
     }
 
-    pub fn set_pixel(&mut self, point: &Vector3<f32>, color: &Vector3<f32>) {
+    pub fn set_pixel(&mut self, point: &Vector3<f32>, samples_ind: usize, color: &Vector3<f32>) {
         // old index: auto ind = point.y() + point.x() * width;
-        if point.x >= self.width as f32 || point.y >= self.height as f32 {
+        if point.x as usize >= self.width || point.y as usize >= self.height {
             return;
         }
 
         let ind = (self.height - point.y as usize - 1) * self.width + point.x as usize;
-        if self.depth_buf[ind] > point.z {
-            self.frame_buf[ind] = color.clone();
-            self.depth_buf[ind] = point.z;
+        if self.depth_buf[ind][samples_ind] > point.z {
+            self.sample_frame_buf[ind][samples_ind] = color.clone();
+            self.depth_buf[ind][samples_ind] = point.z;
         }
     }
 
@@ -272,12 +294,22 @@ impl Rasterizer {
                     t.set_color(0, col_x[0], col_x[1], col_x[2]).ok();
                     t.set_color(1, col_y[0], col_y[1], col_y[2]).ok();
                     t.set_color(2, col_z[0], col_z[1], col_z[2]).ok();
-                    self.rasterize_wireframe(&t);
+                    //self.rasterize_wireframe(&t);
                     self.rasterize_triangle(&t);
                 }
+                self.resolve_sample();
                 Ok(())
             }
             _ => Err("Not supported primitive".to_string()),
+        }
+    }
+
+    pub fn resolve_sample(&mut self) {
+        for (i, frame) in self.sample_frame_buf.iter().enumerate() {
+            self.frame_buf[i] = frame
+                .iter()
+                .fold(Vector3::new(0., 0., 0.), |acc, c| acc + c)
+                / frame.len() as f32;
         }
     }
 
@@ -324,7 +356,7 @@ impl Rasterizer {
                 xe = x1 as i32;
             }
             let point = Vector3::new(x as f32, y as f32, 1.);
-            self.set_pixel(&point, &line_color);
+            self.set_pixel(&point, 0, &line_color);
             let xs = x + 1;
             for x in xs..=xe {
                 if px < 0. {
@@ -338,7 +370,7 @@ impl Rasterizer {
                     px += 2. * (dy1 - dx1);
                 }
                 let point = Vector3::new(x as f32, y as f32, 1.);
-                self.set_pixel(&point, &line_color);
+                self.set_pixel(&point, 0, &line_color);
             }
         } else {
             if dy >= 0. {
@@ -351,7 +383,7 @@ impl Rasterizer {
                 ye = y1 as i32;
             }
             let point = Vector3::new(x as f32, y as f32, 1.);
-            self.set_pixel(&point, &line_color);
+            self.set_pixel(&point, 0, &line_color);
             let ys = y + 1;
             for y in ys..=ye {
                 if py <= 0. {
@@ -365,7 +397,7 @@ impl Rasterizer {
                     py += 2. * (dx1 - dy1);
                 }
                 let point = Vector3::new(x as f32, y as f32, 1.);
-                self.set_pixel(&point, &line_color);
+                self.set_pixel(&point, 0, &line_color);
             }
         }
     }
@@ -376,27 +408,50 @@ impl Rasterizer {
         self.draw_line(t.b(), t.a());
     }
 
+    fn get_samples(&self, x: i32, y: i32) -> Vec<Vector3<f32>> {
+        let x = x as f32;
+        let y = y as f32;
+        match self.antialiasing {
+            AntiAliasing::None => vec![Vector3::new(x + 0.5, y + 0.5, 1.)],
+            AntiAliasing::Grid2x2 => [
+                (x + 0.25, y + 0.25),
+                (x + 0.25, y + 0.75),
+                (x + 0.75, y + 0.25),
+                (x + 0.75, y + 0.75),
+            ]
+            .iter()
+            .map(|&(x, y)| Vector3::new(x, y, 1.))
+            .collect(),
+        }
+    }
+
     fn rasterize_triangle(&mut self, t: &Triangle) {
-        //TODO: get bound box
+        // get bound box
         let v = t.to_vector4();
         let right = t.a()[0].max(t.b()[0]).max(t.c()[0]);
         let left = t.a()[0].min(t.b()[0]).min(t.c()[0]);
         let top = t.a()[1].max(t.b()[1]).max(t.c()[1]);
         let bottom = t.a()[1].min(t.b()[1]).min(t.c()[1]);
+        // For each pixel
         for x in left as i32..right as i32 {
             for y in bottom as i32..top as i32 {
-                if t.contains(x as f32 + 0.5, y as f32 + 0.5) {
-                    let (alpha, beta, gamma) =
-                        compute_barycentric_2d(x as f32 + 0.5, y as f32 + 0.5, t.v());
-                    let w_reciprocal = 1.0 / (alpha / v[0].w + beta / v[1].w + gamma / v[2].w);
-                    let mut z_interpolated =
-                        alpha * v[0].z / v[0].w + beta * v[1].z / v[1].w + gamma * v[2].z / v[2].w;
-                    z_interpolated *= w_reciprocal;
-                    //TODO: only one color per triangle
-                    self.set_pixel(
-                        &Vector3::new(x as f32, y as f32, z_interpolated),
-                        &t.get_color(),
-                    );
+                // For each sample
+                let samples = self.get_samples(x, y);
+                for (j, sample) in samples.iter().enumerate() {
+                    if t.contains(sample.x, sample.y) {
+                        let (alpha, beta, gamma) =
+                            compute_barycentric_2d(x as f32 + 0.5, y as f32 + 0.5, t.v());
+                        let w_reciprocal = 1.0 / (alpha / v[0].w + beta / v[1].w + gamma / v[2].w);
+                        let mut z_interpolated = alpha * v[0].z / v[0].w
+                            + beta * v[1].z / v[1].w
+                            + gamma * v[2].z / v[2].w;
+                        z_interpolated *= w_reciprocal;
+                        self.set_pixel(
+                            &Vector3::new(x as f32, y as f32, z_interpolated),
+                            j,
+                            &t.get_color(),
+                        );
+                    }
                 }
             }
         }

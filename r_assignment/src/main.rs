@@ -56,7 +56,7 @@ fn get_projection_matrx(eye_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32
 
 fn main() {
     // Init rasterizer size
-    let mut r = rst::Rasterizer::new(700, 700);
+    let mut r = rst::Rasterizer::new(700, 700, rst::AntiAliasing::None);
 
     let mut angle = 0.0;
 
